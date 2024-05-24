@@ -30,6 +30,7 @@ library(tidyverse)
 setwd("C:/Users/soldi/Documents/R/CTRP2/luad_tcga_pan_can_atlas_2018")
 
 # Load TCGA LUAD expression and mutation data
+# Num1
 TCGAexp <- read.csv(file = "data_RNA_Seq_v2_expression_median.txt", sep = "\t")
 TCGAmut <- read.csv(file = "data_mutations_extended.txt", sep = "\t")
 
@@ -119,6 +120,7 @@ for (j in 1:20502) {
 AggreRNAAll <- AggreRNAAll[order(AggreRNAAll$Signx.p.value, decreasing = FALSE),]
 write.csv(AggreRNAAll, file = "All_RNA_TCGA2.csv")
 
+# Num2
 # Set working directory to the location of CTRP2 data files
 setwd("C:/Users/soldi/Documents/R")
 
@@ -273,6 +275,7 @@ write.csv(df.RNA, file = paste0(Mutation_name, "_", Cancertype, "_", CancerSubty
 
 
 #Main Loop, x for compound
+# Num3
 setwd("C:/Users/soldi/Documents/R")
 Nrf2GS <- read.csv(file = "NRF2_GS.csv", header = FALSE)
 CorAggre <- data.frame(matrix(ncol = 0, nrow = 11))
@@ -432,6 +435,7 @@ stopCluster(cl)
 
 
 #TCGA LOCC Analysis
+# Num4
 #Libraries
 library(dplyr)
 library(tidyr)
