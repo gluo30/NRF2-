@@ -1,0 +1,956 @@
+# Install required packages
+install.packages(dplyr)
+install.packages(tidyr)
+install.packages(data.table)
+install.packages(lessR)
+install.packages(foreach)
+install.packages(doParallel)
+install.packages(doSNOW)
+install.packages(ggplot2)
+install.packages(ggrepel)
+install.packages(reshape2)
+install.packages(tidyselect)
+install.packages(tidyverse)
+
+# Load required libraries
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(lessR)
+library(foreach)
+library(doParallel)
+library(doSNOW)
+library(ggplot2)
+library(ggrepel)
+library(reshape2)
+library(tidyselect)
+library(tidyverse)
+
+# Set working directory to the location of TCGA LUAD data files
+setwd("C:/Users/soldi/Documents/R/CTRP2/luad_tcga_pan_can_atlas_2018")
+
+# Load TCGA LUAD expression and mutation data
+TCGAexp <- read.csv(file = "data_RNA_Seq_v2_expression_median.txt", sep = "\t")
+TCGAmut <- read.csv(file = "data_mutations_extended.txt", sep = "\t")
+
+# Define mutation names of interest
+Mutation_name <- "KEAP1"
+Mutation_name2 <- "NFE2L2"
+
+# Filter mutation data for specific genes and non-silent mutations
+MutInfo <- subset(TCGAmut, select = c(1, 10, 17))
+MutInfo2 <- filter(MutInfo, Hugo_Symbol == Mutation_name | Hugo_Symbol == Mutation_name2)
+MutInfo2 <- filter(MutInfo2, Variant_Classification != "Silent")
+MutGroup <- distinct(MutInfo2, Tumor_Sample_Barcode)
+MutGroup2 <- MutGroup$Tumor_Sample_Barcode
+MutGroup2 <- gsub("-", "\\.", MutGroup2)
+MutGroup2
+
+# Filter expression data to exclude empty gene symbols
+TCGAexp <- filter(TCGAexp, Hugo_Symbol != "")
+
+# Subset expression data for mutant and wild-type samples
+MutGroup3 <- which(colnames(TCGAexp) %in% MutGroup2)
+TCGAexpmut <- subset(TCGAexp, select = c(MutGroup3))
+TCGAexpmut$Hugo_Symbol <- TCGAexp$Hugo_Symbol
+TCGAexpWT <- subset(TCGAexp, select = -c(MutGroup3))
+
+# Initialize data frames to store aggregated RNA data
+AggreRNAAll <- data.frame(matrix(nrow = 0, ncol = 3))
+colnames(AggreRNAAll) <- c("RNAName", "foldchange", "Signx.p.value")
+AggreRNASigAll <- data.frame(matrix(nrow = 0, ncol = 3))
+colnames(AggreRNASigAll) <- c("RNAName", "foldchange", "Signx.p.value")
+
+# Loop through each gene in the expression data
+for (j in 1:20502) {
+  Rna_name <- as.character(TCGAexp[j, 1])
+  RNAName <- as.character(Rna_name)
+  RNAName <- gsub(":", ".", RNAName)
+  RNAName <- gsub("/", ",", RNAName)
+  WT_RNA <- as.numeric(as.character(TCGAexpWT[j, ]))
+  Mut_RNA <- as.numeric(as.character(TCGAexpmut[j, ]))
+  WT_RNA <- WT_RNA[-c(1, 2)]
+  Mut_RNA <- Mut_RNA[-c(length(MutGroup3) + 1)]
+  
+  # Log2 transform RNA expression values
+  for (k in 1:length(WT_RNA)) {
+    WT_RNA[[k]] <- log2(WT_RNA[k] + 1)
+  }
+  for (k in 1:length(Mut_RNA)) {
+    Mut_RNA[[k]] <- log2(Mut_RNA[k] + 1)
+  }
+  
+  # Calculate median and mean RNA expression for wild-type and mutant samples
+  WT_median <- median(WT_RNA, na.rm = TRUE)
+  Mut_median <- median(Mut_RNA, na.rm = TRUE)
+  WT_mean <- mean(WT_RNA, na.rm = TRUE)
+  Mut_mean <- mean(Mut_RNA, na.rm = TRUE)
+  foldchange = Mut_median / WT_median
+  Signx = t.test(WT_RNA, Mut_RNA)
+  
+  # Plot and save results if mutant median expression is greater than zero
+  if (Mut_median > 0) {
+    df.exp1 <- data.frame(c("WT"), c(WT_RNA))
+    df.exp2 <- data.frame(c("Mutant"), c(Mut_RNA))
+    colnames(df.exp1) <- c("KEAP1_NFE2L2_Status", "value")
+    colnames(df.exp2) <- c("KEAP1_NFE2L2_Status", "value")
+    df.exp <- rbind(df.exp1, df.exp2)
+    df.exp <- df.exp[order(df.exp$KEAP1_NFE2L2_Status, decreasing = TRUE),]
+    df.exp$Mutant <- df.exp$KEAP1_NFE2L2_Status
+    p <- ggplot(df.exp, aes(x = Mutant, y = value, colour = KEAP1_NFE2L2_Status)) +
+      geom_boxplot(outlier.shape = NA) +
+      geom_jitter(size = 1.5, alpha = 0.9) +
+      scale_color_manual(values = c("#F8766D", "#619CFF")) +
+      scale_y_continuous(name = expression(Log[2] ~ (TPM ~ + ~ 1)),
+                         breaks = seq(0, 15, 5),
+                         limits = c(0, 17)) +
+      scale_x_discrete(name = "", limits = rev) +
+      guides(color = FALSE, size = FALSE) +
+      theme(text = element_text(size = 30),
+            axis.text = element_text(size = 30),
+            panel.background = element_rect(fill = "white", colour = "black", size = 0.5, linetype = "solid"))
+    ggsave(paste0(Mutation_name, "_", RNAName, "_TCGA_WTvsMut.pdf"), plot = p, width = 7, height = 7, dpi = 300, units = "in")
+  }
+  AggreRNA <- data.frame(RNAName, foldchange, Signx$p.value)
+  AggreRNAAll[nrow(AggreRNAAll) + 1, ] <- AggreRNA
+}
+
+# Order aggregated RNA data by significance and save to CSV
+AggreRNAAll <- AggreRNAAll[order(AggreRNAAll$Signx.p.value, decreasing = FALSE),]
+write.csv(AggreRNAAll, file = "All_RNA_TCGA2.csv")
+
+# Set working directory to the location of CTRP2 data files
+setwd("C:/Users/soldi/Documents/R")
+
+# Load CTRP2 data files
+Cell_line = read.table(file = "./CTRP2/v20.meta.per_cell_line.txt", sep = "\t", col.names = c("master_ccl_id", "ccl_name", "ccl_availability", "ccle_primary_site", "ccle_primary_hist", "ccle_hist-subtype_1"))
+Compounds = read.table(file = "./CTRP2/v20.meta.per_compound.txt", header = TRUE, sep = "\t", quote = "", col.names = c("master_cpd_id", "cpd_name", "broad_cpd_id", "top_test_conc_umol", "cpd_status", "inclusion_rationale", "gene_symbol_of_protein_target", "target_or_activity_of_compound", "source_name", "source_catalog_id", "cpd_smiles"))
+Experiment = read.table(file = "./CTRP2/v20.meta.per_experiment.txt", sep = "\t", quote = "", col.names = c("experiment_id", "run_id", "experiment_date", "culture_media", "signal", "cells_per_well", "growth_mode", "snp_fp_status", "master_ccl_id"))
+Cves = read.table(file = "./CTRP2/v20.data.curves_post_qc.txt", sep = "\t", quote = "", col.names = c("experiment_id", "conc_pts_fit", "fit_num_param", "p1_conf_int_high", "p1_conf_int_low", "p2_conf_int_high", "p2_conf_int_low", "p4_conf_int_high", "p4_conf_int_low", "p1_center", "p2_slope", "p3_total_decline", "p4_baseline", "apparent_ec50_umol", "pred_pv_high_conc", "area_under_curve", "master_cpd_id"))
+Curves <- subset(Cves, select = c(1, 16, 17))
+Depmap = read.csv(file = "./CTRP2/sample_info2.csv", sep = ",", quote = "")
+DepmapIDs <- subset(Depmap, select = c(1, 2, 4))
+CCLE_Mut = read.csv(file = "./CTRP2/CCLE_mutations.csv", sep = ",", quote = "")
+Mutations <- subset(CCLE_Mut, select = c(1, 9, 16, 19, 20, 21, 26))
+Expression <- read.csv(file = "./CTRP2/CCLE_expression.csv", sep = ",", quote = "")
+ExpressionGenes = as.character(colnames(Expression))
+ExpressionGenes2 <- gsub("\\..*", "", ExpressionGenes)
+
+# Filter cell lines for lung cancer excluding small cell carcinoma
+Cancer_cells <- Cell_line
+Cancertype = as.character("lung")
+Cancer_cells <- subset(Cell_line, ccle_primary_site == Cancertype)
+Cancer_cells <- subset(Cancer_cells, ccle_hist.subtype_1 != "small_cell_carcinoma")
+CancerSubtype <- "NSC"
+
+# Set working directory for specific cancer type
+setwd(paste0("C:/Users/soldi/Documents/R/", Cancertype))
+
+# Filter mutation data for specific genes
+Specific_mutations <- filter(Mutations, Hugo_Symbol == Mutation_name | Hugo_Symbol == Mutation_name2)
+
+# Merge cancer cell line data with DepMap IDs and mutation data
+DepmapIDs <- subset(Depmap, select = c(1, 2, 4))
+names(DepmapIDs)[names(DepmapIDs) == "stripped_cell_line_name"] <- "ccl_name"
+Cancer_cells_ID <- merge(x = Cancer_cells, y = DepmapIDs, by = "ccl_name", all.x = TRUE)
+names(DepmapIDs)[names(DepmapIDs) == "ccl_name"] <- "ccl_name1"
+names(DepmapIDs)[names(DepmapIDs) == "alias"] <- "ccl_name"
+Cancer_cells_ID <- merge(x = Cancer_cells_ID, y = DepmapIDs, by = "ccl_name", all.x = TRUE)
+Cancer_cells_ID$DepMap_ID.x <- coalesce(Cancer_cells_ID$DepMap_ID.x, Cancer_cells_ID$DepMap_ID.y)
+Cancer_cells_ID$DepMap_ID.y <- NULL
+names(Cancer_cells_ID)[names(Cancer_cells_ID) == "DepMap_ID.x"] <- "DepMap_ID"
+Cancer_cells_ID_Mut <- merge(x = Cancer_cells_ID, y = Specific_mutations, by = "DepMap_ID", all.x = TRUE)
+
+# Label cancer cells as mutant or wild-type
+Cancer_cells_ID_Mut <- mutate(Cancer_cells_ID_Mut, Mutant = ifelse(Variant_annotation == "damaging" | Variant_annotation == "other non-conserving", "Mutant", "WT"))
+Cancer_cells_ID_Mut$Mutant <- as.character(Cancer_cells_ID_Mut$Mutant)
+Cancer_cells_ID_Mut$Mutant[is.na(Cancer_cells_ID_Mut$Mutant)] <- "WT"
+Cancer_cell_full_Mutations <- Cancer_cells_ID_Mut
+Cancer_cells_ID_Mut <- Cancer_cells_ID_Mut[order(Cancer_cells_ID_Mut$Mutant),]
+Cancer_cells_ID_Mut <- distinct(Cancer_cells_ID_Mut, master_ccl_id, .keep_all = TRUE)
+Cancer_cells_ID_Mut <- merge(x = Cancer_cells_ID_Mut, y = NSCLCN2AS, by = "ccl_name", all.x = TRUE)
+
+# Initialize data frame for storing p-values and other statistics
+AllPvalues <- data.frame(c("name", "MedWT", "WT", "MedMut", "Mut", "WTCount", "Counter", "pvalue", "foldchange", "Mutation"))
+
+# Filter and merge data for differential gene expression analysis
+Aggre_Cancer_AUC <- data.frame(matrix(ncol = 29, nrow = 0))
+Mutation_name
+WT_Cancer_Num <- filter(Cancer_cells_ID_Mut, Mutant == "WT")
+Mutant_Cancer_Num <- filter(Cancer_cells_ID_Mut, Mutant == "Mutant")
+NumWT <- as.numeric(nrow(WT_Cancer_Num))
+NumMut <- as.numeric(nrow(Mutant_Cancer_Num))
+j <- grep("NQO1", ExpressionGenes)
+
+# Loop through each gene in the expression data
+for (j in 2:19145) {
+  Rna_name <- ExpressionGenes2[j]
+  Expressionset1 <- subset(Expression, select = c(1, j))
+  colnames(Expressionset1)[1] <- "DepMap_ID"
+  DepmapIDs <- subset(Depmap, select = c(1, 2, 4))
+  names(DepmapIDs)[names(DepmapIDs) == "stripped_cell_line_name"] <- "ccl_name"
+  DepmapIDs <- merge(x = DepmapIDs, y = Expressionset1, by = "DepMap_ID", all.x = TRUE)
+  Cancer_cells_ID <- merge(x = Cancer_cells, y = DepmapIDs, by = "ccl_name", all.x = TRUE)
+  Cancer_cells_RNA <- merge(Cancer_cells_ID, y = Cancer_cells_ID_Mut, by = "DepMap_ID", all.x = TRUE)
+  Cancer_cells_RNA <- Cancer_cells_RNA[!is.na(Cancer_cells_RNA[, 9]),]
+  WT_RNA <- Cancer_cells_RNA[Cancer_cells_RNA$Mutant == "WT",]
+  MuT_RNA <- Cancer_cells_RNA[Cancer_cells_RNA$Mutant == "Mutant",]
+  RNAName <- as.character(Rna_name)
+  RNAName <- gsub(":", ".", RNAName)
+  RNAName <- gsub("/", ",", RNAName)
+  WT_RNA_A <- as.numeric(as.character(WT_RNA[, 9]))
+  WT_median <- median(WT_RNA_A)
+  Mut_RNA_A <- as.numeric(as.character(MuT_RNA[, 9]))
+  Mut_median <- median(Mut_RNA_A)
+  foldchange = Mut_median - WT_median
+  
+  # Perform t-test and filter significant results for plotting
+  if (nrow(WT_RNA) > 4 & nrow(MuT_RNA) > 4 & WT_median >= 1 & foldchange != 0) {
+    Signx = t.test(WT_RNA_A, Mut_RNA_A)
+    if (Signx$p.value < 0.01 & foldchange > 0.5) {
+      mut25 <- quantile(Mut_RNA_A)
+      WT25 <- quantile(WT_RNA_A)
+      if (mut25[2] > WT25[3] & WT25[4] < mut25[3]) {
+        df.exp <- subset(Cancer_cells_RNA, select = c(9, 24))
+        df.exp <- melt(df.exp, id.vars = "Mutant", na.rm = TRUE)
+        df.exp$KEAP1_NFE2L2_Status <- df.exp$Mutant
+        p <- ggplot(df.exp, aes(x = Mutant, y = value, colour = KEAP1_NFE2L2_Status)) +
+          geom_boxplot(outlier.shape = NA) +
+          geom_jitter(size = 1.5, alpha = 0.9) +
+          scale_color_manual(values = c("#F8766D", "#619CFF")) +
+          scale_y_continuous(name = expression(Log[2] ~ (TPM ~ + ~ 1)),
+                             breaks = seq(0, 15, 5),
+                             limits = c(0, 17)) +
+          scale_x_discrete(name = "", limits = rev) +
+          guides(color = FALSE, size = FALSE) +
+          theme(text = element_text(size = 30),
+                axis.text = element_text(size = 30),
+                panel.background = element_rect(fill = "white", colour = "black", size = 0.5, linetype = "solid"))
+        ggsave(paste0(Cancertype, "_", CancerSubtype, "_", "KEAP1_NFE2L2", "_", RNAName, "_WTvsMut.pdf"), plot = p, width = 7, height = 7, dpi = 300, units = "in")
+        AggreSigRNA <- data.frame(RNAName, foldchange, Signx$p.value)
+        AggreRNASigAll <- Merge(AggreRNASigAll, AggreSigRNA, by = "rows")
+      }
+    } else if (Signx$p.value < 0.01 & foldchange < -0.5) {
+      mut25 <- quantile(Mut_RNA_A)
+      WT25 <- quantile(WT_RNA_A)
+      if (mut25[3] < WT25[2] & WT25[3] > mut25[4]) {
+        df.exp <- subset(Cancer_cells_RNA, select = c(9, 24))
+        df.exp <- melt(df.exp, id.vars = "Mutant", na.rm = TRUE)
+        df.exp$KEAP1_NFE2L2_Status <- df.exp$Mutant
+        p <- ggplot(df.exp, aes(x = Mutant, y = value, colour = KEAP1_NFE2L2_Status)) +
+          geom_boxplot(outlier.shape = NA) +
+          geom_jitter(size = 1.5, alpha = 0.9) +
+          scale_color_manual(values = c("#F8766D", "#619CFF")) +
+          scale_y_continuous(name = expression(Log[2] ~ (TPM ~ + ~ 1)),
+                             breaks = seq(0, 15, 5),
+                             limits = c(0, 17)) +
+          scale_x_discrete(name = "", limits = rev) +
+          guides(color = FALSE, size = FALSE) +
+          theme(text = element_text(size = 30),
+                axis.text = element_text(size = 30),
+                panel.background = element_rect(fill = "white", colour = "black", size = 0.5, linetype = "solid"))
+        ggsave(paste0(Cancertype, "_", CancerSubtype, "_", "KEAP1_NFE2L2", "_", RNAName, "_WTvsMut.pdf"), plot = p, width = 7, height = 7, dpi = 300, units = "in")
+        AggreSigRNA <- data.frame(RNAName, foldchange, Signx$p.value)
+        AggreRNASigAll <- Merge(AggreRNASigAll, AggreSigRNA, by = "rows")
+      }
+    }
+  } else {
+    Signx = 0
+    Signx$p.value = 1
+  }
+  AggreRNA <- data.frame(RNAName, foldchange, Signx$p.value)
+  AggreRNAAll <- Merge(AggreRNAAll, AggreRNA, by = "rows")
+}
+
+# Filter and order aggregated RNA data, then save to CSV
+AggreRNAAll2 <- AggreRNAAll[!is.na(AggreRNAAll$Signx.p.value),]
+AggreRNAAll <- AggreRNAAll2[!is.na(AggreRNAAll2$foldchange),]
+df.RNA = melt(AggreRNAAll[, c("foldchange", "Signx.p.value")], id.vars = "foldchange", na.rm = TRUE)
+df.RNA$gene <- AggreRNAAll$RNAName
+df.RNA <- df.RNA[order(df.RNA$value),]
+df.RNA2 <- df.RNA[df.RNA$value != 1,]
+write.csv(df.RNA, file = paste0(Mutation_name, "_", Cancertype, "_", CancerSubtype, "filtered_logRNAv4.csv"))
+
+
+#Main Loop, x for compound
+setwd("C:/Users/soldi/Documents/R")
+Nrf2GS <- read.csv(file = "NRF2_GS.csv", header = FALSE)
+CorAggre <- data.frame(matrix(ncol = 0, nrow = 11))
+CorTotal <- data.frame(c(1))
+ x <- as.numeric(10)
+ # Loop through each gene in Nrf2GS
+ for (i in 1:nrow(Nrf2GS)) {
+   gene <- Nrf2GS[i, 1]
+   
+   # Find the corresponding Nrf2 number in Expression2 using exact match
+   Nrf2_number <- which(ExpressionGenes2 == gene)
+   
+   # Append the Nrf2 number to the list
+   Nrf2_numbers[[i]] <- Nrf2_number
+ }
+ 
+ # Print the list of Nrf2 numbers
+ print(Nrf2_numbers)
+ Nrf2_numbers_vector <- unlist(Nrf2_numbers)
+# cl <- makeCluster(8, type="SOCK") # 8 - number of cores
+# registerDoSNOW(cl) # Register Backend Cores for Parallel Computing
+#Drug Loop
+# foreach(i = 1:x) %dopar% {
+for (i in 1:x) {
+  
+  library(dplyr)
+  library(tidyr)
+  library(data.table)
+  library(lessR)
+  library(foreach)
+  library(doParallel)
+  library(doSNOW)
+  library(ggplot2)
+  library(ggrepel)
+  library(reshape2)
+  library(tidyselect)
+  library(tibble)
+
+  
+  # Initialize an empty list to store the Nrf2 numbers
+  Nrf2_numbers <- list()
+  
+ 
+  
+  #Nrf2 target Genes Z score
+  Gene_set <- "Nrf2"
+  {
+    # Select only the columns of Expression that are in Nrf2_numbers
+    Expression_subset <- Expression[, Nrf2_numbers_vector]
+    #PtExpressionNrf2 <- PtExpressionNrf2[c(1,2,3,5,6,7,8,9,11,12,13),]
+    Expression_subset <- na.omit(Expression_subset)
+    # Calculate the mean for each column
+    Averages <- colMeans(Expression_subset, na.rm = TRUE)
+    
+    # Calculate the standard deviation for each column
+    SD <- apply(Expression_subset, 2, sd, na.rm = TRUE)
+    
+    # Transform the dataframe: subtract column averages and divide by column standard deviations
+    Expression_Transformed <- sweep(Expression_subset, 2, Averages, FUN = "-")  # Subtract column averages
+    Expression_Transformed <- sweep(Expression_Transformed, 2, SD, FUN = "/")   # Divide by column standard deviations
+    
+    # Print the transformed dataframe
+    print(Expression_Transformed)
+    
+    Expression_Transformed$Nrf2AS <- rowMeans(Expression_Transformed, na.rm = TRUE)
+    ExpressionNrf2AS <- cbind(Expression[,1],Expression_Transformed[,15])
+  }
+  
+    Rna_name <- "Nrf2AS"
+    Expressionset1 <- ExpressionNrf2AS
+    colnames(Expressionset1) <- c("DepMap_ID", "N2AS")
+    DepmapIDs <- subset(Depmap, select = c(1,2,4))
+    names(DepmapIDs)[names(DepmapIDs) == "stripped_cell_line_name"] <- "ccl_name" 
+    DepmapIDs <- merge(x = DepmapIDs,y = Expressionset1, by = "DepMap_ID", all.x = TRUE)
+    DepmapIDs <- merge(x = DepmapIDs,y = Cell_line, by = "ccl_name", all.x = TRUE)
+    Cancer_cells_ID <- DepmapIDs
+    colnames(Cancer_cells_ID)[2] <- "ccl_name"
+    DepmapIDs <- merge(x = DepmapIDs,y = Cell_line, by = "ccl_name", all.x = TRUE)
+   
+    #Loop for drug
+    
+    rowI <- Compounds[i,]
+    CpdName <- as.character(rowI$cpd_name)
+    CpdName <- gsub(":",".",CpdName)
+    CpdName <- gsub("/",",",CpdName)
+    Cancer_cells_AUC <- filter(Curves, master_cpd_id == rowI$master_cpd_id)
+    Cancer_cells_AUC <- merge(x = Cancer_cells_AUC, y = Experiment, by = "experiment_id", all.x = TRUE)
+    Cancer_cells_AUC <- merge(x = Cancer_cells_ID, y = Cancer_cells_AUC, by = "master_ccl_id", all.x = TRUE)
+    Cancer_cells_AUC$ccle_hist.subtype_1 <- as.character(Cancer_cells_AUC$ccle_hist.subtype_1)
+    Cancer_cells_AUC$ccle_hist.subtype_1[Cancer_cells_AUC$ccle_hist.subtype == ""] <- "Unknown"
+    Cancer_cells_AUC <- distinct(Cancer_cells_AUC,master_ccl_id, .keep_all = TRUE)
+    Cancer_cells_AUC <- Cancer_cells_AUC[!is.na(Cancer_cells_AUC$experiment_id),]
+    Cancer_cells_AUC <- Cancer_cells_AUC[Cancer_cells_AUC$ccle_primary_site == "lung",]
+    Cancer_cells_AUC <- Cancer_cells_AUC[Cancer_cells_AUC$ccle_hist.subtype_1 != "small_cell_carcinoma",]
+    
+    Cancer_Cor <- subset(Cancer_cells_AUC, select = c(5,11))
+    Cancer_Cor[,1] <- as.numeric(as.character(Cancer_Cor[,1]))
+    Cancer_Cor[,2] <- as.numeric(as.character(Cancer_Cor[,2]))
+    Cancer_Cor <- Cancer_Cor[!is.na(Cancer_Cor$area_under_curve),]
+    Cancer_Cor <- Cancer_Cor[!is.na(Cancer_Cor[,1]),]
+    median_exp <- median(Cancer_Cor[,1])
+    
+    
+    mean_AUC <- mean(Cancer_Cor[,1])
+    st_AUC <- sd(Cancer_Cor[,1])
+    #Outlier Removal
+    median_exp <- median(Cancer_Cor[,1])
+    #filter out low expression or low cell lines
+    if(nrow(Cancer_Cor) > 10){
+      Correlation <- cor(Cancer_Cor, use="pairwise.complete.obs",method = "pearson") 
+      Correlation2 <- cor(Cancer_Cor, use="pairwise.complete.obs",method = "spearman") 
+      Cor <- Correlation[1,2]
+      Cor <- as.numeric(as.character(Cor))
+      Cor2 <- Correlation2[1,2]
+      Cor2 <- as.numeric(as.character(Cor2))
+      RNAName <- as.character(Rna_name)
+      RNAName <- gsub(":",".",RNAName)
+      RNAName <- gsub("/",",",RNAName)
+      CorOutput <- data.frame(c(CpdName,Cor,Cor2))
+      CorTotal <- data.frame(CorTotal,CorOutput)
+    }
+}
+  CorTotal = t(CorTotal)
+  Cortotal2 <- CorTotal
+  CorTotal <- Cortotal2
+  CorTotal[1,1] = Rna_name
+  Cortotal2[1,1] = Rna_name
+  colnames(CorTotal) <- c("Gene","CorrelationP","CorrelationS")
+  CorTotal[,2] = as.numeric(as.character(CorTotal[,2]))
+  CorTotal[,3] = as.numeric(as.character(CorTotal[,3]))
+  CorTotal <- CorTotal[order(as.numeric(as.character(CorTotal[,2])), decreasing = TRUE),]
+  CorAverage = (as.numeric(as.character(CorTotal[,2])) + as.numeric(as.character(CorTotal[,3])))/2
+  CorAverage <- CorAverage[CorAverage != 1]
+  meanCor <- mean(CorAverage)
+  stCor <- sd(CorAverage)
+  Zscore1 <- list(as.numeric(1))
+  Zscore <- (CorAverage - meanCor) / stCor
+  Zscore <- append (Zscore1, Zscore)
+  CorAverage2 <- list(as.numeric(1))
+  CorAverage2 <- append(CorAverage2,CorAverage)
+  Cortotal2 <- data.frame(CorTotal)
+  Cortotal2$Average <- CorAverage2
+  Cortotal2$Zscore <- Zscore
+  Cortotal2 <- Cortotal2[order(as.numeric(as.character(Cortotal2[,4]))),]
+  CorAll <- Cortotal2[1:5,]
+  Cortotal2 <- Cortotal2[order(as.numeric(as.character(Cortotal2[,4])), decreasing = TRUE),]
+  CorAll2 <- Cortotal2[1:6,]
+  Cortotal2 <- data.frame(Cortotal2)
+  Cortotal2 <- Cortotal2[c(-1),]
+  colnames(Cortotal2) <- c("Gene","CorrelationP","CorrelationS","AverageC","Z Score")
+  fwrite(Cortotal2, file = paste0("correlation_",Rna_name,".csv"))
+
+  
+
+stopCluster(cl)
+
+
+
+#TCGA LOCC Analysis
+#Libraries
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(lessR)
+library(foreach)
+library(doParallel)
+library(doSNOW)
+library(ggplot2)
+library(ggrepel)
+library(reshape2)
+library(tidyselect)
+library(tidyverse)
+library(devtools)
+library(githubinstall)
+library(survival)
+library(lubridate)
+library(ggsurvfit)
+library(gtsummary)
+library(tidycmprsk)
+library(condsurv)
+library(ggplot2)
+library(cutpointr)
+library(survminer)
+require(rlist)
+
+#Setup
+setwd("C:/Users/soldi/Documents/R/CTRP2")
+Nrf2GS <- read.csv(file = "NRF2_GS.csv", header = FALSE)
+
+#This works for most TCGA cancer datasets but some like LUAD require modification because the data formatting is different
+#Additional adjustments are needed.  
+#If you do not want to loop through all cancers (you need all files), just do one at a time
+cancer <- list("LIHC", "LUSC",  "LAML", "PCPG", "HNSC", "KIRC", "KIRP", "BLCA", "PAAD", "BRCA", "COADREAD", "THCA", "PRAD", "ESCA", "UCEC", "SARC", "GBM", "LGG", "OV", "STAD", "SKCM", "CESC")
+i <- 1
+j <- 101
+for (i in 1:22){
+  
+  #Select Cancer
+  TCGAcancer <- cancer[i]
+  
+  {
+    #set up folder
+    TCGA_Cancer_ID <- TCGAcancer
+    setwd(paste0("C:/Users/soldi/Documents/R/CTRP2/", TCGA_Cancer_ID,"_tcga_pan_can_atlas_2018/"))
+    #setwd("C:/Users/LetterioLab/Documents/R/CTRP2/luad_tcga_pan_can_atlas_2018")
+    #PtClinical = read.table(file = "data_clinical_patient.txt", sep = "\t",quote = "", header = TRUE)
+    #PtMutation = read.table(file = "data_mutations_extended.txt", sep = "\t",quote = "", header = TRUE)
+    #PtExpression = read.table(file = "data_RNA_Seq_v2_expression_median.txt", sep = "\t",quote = "", header = TRUE)
+    #PtExpressionZ = read.table(file = "data_RNA_Seq_v2_mRNA_median_Zscores.txt", sep = "\t",quote = "", header = TRUE)
+    {
+      #Read Data
+      Mutation1 = "KEAP1"
+      Mutation2 = "NFE2L2"
+      
+      PtClinical = read.table(file = "data_clinical_patient.txt", sep = "\t",quote = "", header = TRUE)
+      PtMutation = read.table(file = "data_mutations.txt", sep = "\t",quote = "", header = TRUE)
+      PtExpression = read.table(file = "data_mrna_seq_v2_rsem.txt", sep = "\t",quote = "", header = TRUE)
+      PtExpressionZ = read.table(file = "data_mrna_seq_v2_rsem_zscores_ref_all_samples.txt", sep = "\t",quote = "", header = TRUE)
+      #Mutation1 = "IDH1"
+      #PtSample = read.table(file = "data_clinical_sample.txt", sep = "\t",quote = "", fill = TRUE, header = TRUE)
+      #PtSample2 = subset(PtSample, select = c(1,2))
+    }
+    for (j in 1:2){
+      Mutation1 <- PtExpressionZ[j,1]
+      Mutation1 <- "KEAP1"
+      if (Mutation1 != ""){
+        {
+          #Specify Mutations of Interest
+          PtSpecificMutation <- subset(PtMutation, select = c(1,9:20,39))
+          #PtSpecificMutation <- subset(PtMutation, select = c(1,10,17,39))
+          PtSpecificMutation <- filter(PtSpecificMutation, Hugo_Symbol == Mutation1 | Hugo_Symbol == Mutation2)
+          PtSpecificMutation <- filter(PtSpecificMutation, Variant_Classification != "Silent")
+          # PtSpecificMutation <- distinct(PtSpecificMutation, Tumor_Sample_Barcode, .keep_all = TRUE)
+          PtSpecificMutation <-  unique(PtSpecificMutation[ , c("Hugo_Symbol", "Tumor_Sample_Barcode")], .keep_all = TRUE) 
+          PtSpecificMutation$Tumor_Sample_Barcode <- substr(PtSpecificMutation$Tumor_Sample_Barcode,1,nchar(PtSpecificMutation$Tumor_Sample_Barcode)-3)
+          colnames(PtSpecificMutation)[2] <- "PATIENT_ID"
+          
+          
+          
+          PtClinical2 <- merge(PtClinical, PtSpecificMutation, by = "PATIENT_ID", all.x = TRUE)
+          PtClinical2$Hugo_Symbol <- replace_na(PtClinical2$Hugo_Symbol, "WT")
+          PtClinical2$Mutant <- PtClinical2$Hugo_Symbol
+        }
+        # {
+        #   TestGene <- "G6PD"
+        #   Nrf2GS7 <- data.frame(c(TestGene))
+        #   colnames(Nrf2GS7) <- "V1"
+        # }
+        
+        
+        # {
+        #   PtExpressionNrf2Raw <- PtExpression[PtExpression$Hugo_Symbol %in% Nrf2GS6$V1,]
+        #   PtExpressionNrf2Raw <- subset(PtExpressionNrf2Raw, select = c(-2))
+        #   PtExpressionNrf2RawCa <- subset(PtExpressionNrf2Raw, select = c(-1))
+        #   PtExpressionNrf2Raw$Mean <- rowMeans(PtExpressionNrf2RawCa, na.rm = TRUE)
+        #   write.csv(PtExpressionNrf2Raw, file = "RawExpression.csv")
+        # }
+        
+        #Nrf2 target Genes Z score
+        #Name of GeneSet
+        Gene_set <- paste0("N2AS")
+        {
+          #Calculate score for each sample
+          PtExpressionNrf2 <- PtExpressionZ[PtExpressionZ$Hugo_Symbol %in% Nrf2GS$V1,]
+          #PtExpressionNrf2 <- PtExpressionNrf2[c(1,2,3,5,6,7,8,9,11,12,13),]
+          PtExpressionNrf2 <- subset(PtExpressionNrf2, select = c(-2))
+          PtExpressionNrf2 <- na.omit(PtExpressionNrf2)
+          Averages <- summarize_all(PtExpressionNrf2[,-c(1)], mean)
+          Averages <- data.frame(0, Averages)
+          colnames(Averages)[1] <- "Hugo_Symbol"
+          PtExpressionNrf2 <- rbind(PtExpressionNrf2, Averages)
+          PtExpressionNrf2[nrow(PtExpressionNrf2),1] <- "Mean"
+          
+          PtNrf2Score <- PtExpressionNrf2[nrow(PtExpressionNrf2),]
+          #PtNrf2Score <- subset(PtNrf2Score, select = c(-2))
+          
+          PtNrf2Score <- rbind(colnames(PtNrf2Score), PtNrf2Score)
+          PtNrf2Score2 <- t(PtNrf2Score)
+          PtNrf2Score2 <- PtNrf2Score2[2:nrow(PtNrf2Score2),]
+          colnames(PtNrf2Score2) <- c("PATIENT_ID", "Nrf2_Score")
+          #colnames(PtNrf2Score2) <- c("SAMPLE_ID", "Nrf2_Score")
+          
+          PtNrf2Score2[,1] <- substr(PtNrf2Score2[,1],1,nchar(PtNrf2Score2[,1])-3)
+          PtNrf2Score2[,1] <- str_replace(PtNrf2Score2[,1], "\\.", "-")
+          PtNrf2Score2[,1] <- str_replace(PtNrf2Score2[,1], "\\.", "-")
+          
+          # PtExpressionNrf2 <- na.omit(PtExpressionNrf2)
+        }
+        
+        #Try cutting once
+        {
+          cutter <- 22
+          #PtNrf2Score3 = merge(PtNrf2Score2, PtSample2, by = "SAMPLE_ID")
+          PtClinical4 <- merge(PtClinical, PtNrf2Score2,  by = "PATIENT_ID", .keep_all= TRUE)  
+          PtSurvivalCurve <- subset(PtClinical4, select = c(1,30:38))
+          #PtSurvivalCurve <- subset(PtClinical4, select = c(1,19:24))
+          #PtSurvivalCurve <- PtClinical4
+          PtSurv <- subset(PtSurvivalCurve, select = c(3,2,10))
+          #PtSurv <- subset(PtSurvivalCurve, select = c(3,2,7))
+          
+          colnames(PtSurv) <- c("time", "status", "score")
+          PtSurv <- mutate(PtSurv, Status = dplyr::recode(PtSurv$status, "1:DECEASED" = 1, "0:LIVING" = 0))
+          PtSurv <- na.omit(PtSurv)
+          PtSurv$score <- as.numeric(PtSurv$score)
+          PtSurv[is.na(PtSurv)] <- 0
+          PtSurv <- PtSurv[order(as.numeric(PtSurv$score),decreasing = TRUE), ]
+          Nrf2ScoreValue <- PtSurv[cutter,3]
+          PtSurv[1:cutter,3] <- "High_Nrf2"
+          PtSurv[cutter:(nrow(PtSurv)+1),3] <- "Low_Nrf2"
+          #PtSurv[(1.5*nrow(PtSurv)-(nrow(PtSurv)-4)):(nrow(PtSurv)+1),3] <- "Low_Nrf2_Score"
+          #PtSurv$score[as.numeric(PtSurv$score) > .4] <- "Highest_Nrf2_Score"
+          #PtSurv$score[as.numeric(PtSurv$score) > 0.2932] <- "High_Nrf2_Score"
+          #PtSurv$score[as.numeric(PtSurv$score) < 0.2932] <- "Low_Nrf2_Score"
+          #PtSurv$score[as.numeric(PtSurv$score) < -0.3] <- "Lowest_Nrf2_Score"
+          PtSurv <- filter(PtSurv, score == "High_Nrf2" | score == "Low_Nrf2")
+          #write.csv(PtSurv, file = paste0("PtSurv", cutter, ".csv"))
+          
+          
+          
+          CutTrial <- survdiff(Surv(time, Status) ~ score, data = PtSurv) 
+          CutTrial  <- data.frame(CutTrial$pvalue,CutTrial$n, CutTrial$obs,CutTrial$exp, Nrf2ScoreValue)
+          HR <- as.numeric(CutTrial[1,4])*as.numeric(CutTrial[2,5])/as.numeric(CutTrial[1,5])/as.numeric(CutTrial[2,4])
+          CutTrial$HR <- HR
+        }
+        
+        #Prepare survival data with expression data
+        AggreCut <- CutTrial
+        
+        AggreCut <- data.frame(matrix(ncol=7,nrow=0, dimnames=list(NULL, c(colnames(CutTrial)))))
+        
+        #PtNrf2Score3 = merge(PtNrf2Score2, PtSample2, by = "SAMPLE_ID")
+        PtClinical4 <- merge(PtClinical, PtNrf2Score2,  by = "PATIENT_ID", .keep_all= TRUE)  
+        PtSurvivalCurve <- subset(PtClinical4, select = c(1,30:38))
+        #PtSurvivalCurve <- subset(PtClinical4, select = c(1,19:24))
+        #PtSurvivalCurve <- PtClinical4
+        PtSurv <- subset(PtSurvivalCurve, select = c(3,2,10))
+        #PtSurv <- subset(PtSurvivalCurve, select = c(3,2,7))
+        
+        colnames(PtSurv) <- c("time", "status", "score")
+        PtSurv <- mutate(PtSurv, Status = dplyr::recode(PtSurv$status, "1:DECEASED" = 1, "0:LIVING" = 0))
+        PtSurv <- na.omit(PtSurv)
+        # PtSurv <- uroPFS
+        PtSurv$score <- as.numeric(PtSurv$score)
+        PtSurv[is.na(PtSurv)] <- 0
+        #PtSurv <- HNCCsurv
+        PtSurv <- PtSurv[order(as.numeric(PtSurv$score),decreasing = TRUE), ]
+        
+        #Perform every cutoffs and calculate values
+        for (cutter in 2:(nrow(PtSurv)-1)){  
+          
+          {
+            # #PtNrf2Score3 = merge(PtNrf2Score2, PtSample2, by = "SAMPLE_ID")
+            # PtClinical4 <- merge(PtClinical, PtNrf2Score2,  by = "PATIENT_ID", .keep_all= TRUE)  
+            # PtSurvivalCurve <- subset(PtClinical4, select = c(1,30:38))
+            # #PtSurvivalCurve <- subset(PtClinical4, select = c(1,19:24))
+            # #PtSurvivalCurve <- PtClinical4
+            # PtSurv <- subset(PtSurvivalCurve, select = c(3,2,10))
+            # #PtSurv <- subset(PtSurvivalCurve, select = c(3,2,7))
+            # 
+            # colnames(PtSurv) <- c("time", "status", "score")
+            # PtSurv <- mutate(PtSurv, Status = dplyr::recode(PtSurv$status, "1:DECEASED" = 1, "0:LIVING" = 0))
+            # PtSurv <- na.omit(PtSurv)
+            # # PtSurv <- uroPFS
+            # PtSurv$score <- as.numeric(PtSurv$score)
+            # PtSurv[is.na(PtSurv)] <- 0
+            # #PtSurv <- HNCCsurv
+            # PtSurv <- PtSurv[order(as.numeric(PtSurv$score),decreasing = TRUE), ]
+            Nrf2ScoreValue <- PtSurv[cutter,3]
+            PtSurv[1:cutter,5] <- "High_Nrf2"
+            PtSurv[cutter:(nrow(PtSurv)),5] <- "Low_Nrf2"
+            colnames(PtSurv)[5] <- "Score"
+            #PtSurv[(1.5*nrow(PtSurv)-(nrow(PtSurv)-4)):(nrow(PtSurv)+1),3] <- "Low_Nrf2_Score"
+            #PtSurv$score[as.numeric(PtSurv$score) > .4] <- "Highest_Nrf2_Score"
+            #PtSurv$score[as.numeric(PtSurv$score) > -0.2932] <- "High_Nrf2_Score"
+            #PtSurv$score[as.numeric(PtSurv$score) < -0.2932] <- "Low_Nrf2_Score"
+            #PtSurv$score[as.numeric(PtSurv$score) < -0.3] <- "Lowest_Nrf2_Score"
+            # PtSurv <- filter(PtSurv, Score == "High_Nrf2" | Score == "Low_Nrf2")
+            #write.csv(PtSurv, file = paste0("PtSurv", cutter, ".csv"))
+          }
+          
+          #cox regression 
+          CutTrial <- survdiff(Surv(time, Status) ~ Score, data = PtSurv) 
+          CutTrial  <- data.frame(CutTrial$pvalue,CutTrial$n, CutTrial$obs,CutTrial$exp, Nrf2ScoreValue)
+          HR <- as.numeric(CutTrial[1,4])*as.numeric(CutTrial[2,5])/as.numeric(CutTrial[1,5])/as.numeric(CutTrial[2,4])
+          CutTrial$HR <- HR
+          AggreCut <- rbind(AggreCut, CutTrial)
+          # write.csv(CutTrial, file = paste0("CutTrial", cutter, ".csv"))
+        }
+        
+        #aggregate values
+        {AggreCut <- AggreCut[order(as.numeric(AggreCut[,1]), decreasing = FALSE),]
+          AggreCut2 <- AggreCut[AggreCut$groups == "Score=High_Nrf2",]
+          AggreCut2 <- AggreCut2[order(as.numeric(AggreCut2[,3]), decreasing = FALSE),]
+          AggreCut2$Fraction <- AggreCut2$Freq/nrow(AggreCut2)
+          AggreCut2$logp <- -log(AggreCut2$CutTrial.pvalue, base = 10)
+          
+        }
+        #write.csv(AggreCut, file = paste0("AggreCutTrial",TestGene, cutter, ".csv"))
+        write.csv(AggreCut2, file = paste0("AggreCut", Gene_set,cutter, ".csv"))
+        
+        #graph LOCC cutoff selection
+        {
+          df.cut <- subset(AggreCut2, select = c(7,8))
+          df.cut <- melt(df.cut, id.vars = "Fraction" , na.rm =  TRUE)
+          df.cut2 <- subset(AggreCut2, select = c(8,9))
+          df.cut2$logp <- (df.cut2$logp/2)
+          df.cut2 <- melt(df.cut2, id.vars = "Fraction" , na.rm =  TRUE)
+          df.cut2$variable <- "-Log (p value)"
+          df.cut2 <- rbind(df.cut2, df.cut)
+          df.cut2 <- df.cut2[df.cut2$Fraction > 0.05,]
+          df.cut2 <- df.cut2[df.cut2$Fraction < 0.95,]
+          df.cut2$variable <- factor(df.cut2$variable, levels = c("HR", "-Log (p value)"))
+          p <- ggplot(df.cut2, aes(x = Fraction, y = value,color = variable)) +geom_point() + geom_line(aes(color = variable)) + scale_color_manual(values=c("black", "orange")) + ggtitle(paste0(Gene_set, " TCGA ", TCGA_Cancer_ID ," LOCC")) + scale_y_continuous(
+            # Features of the first axis
+            name = "Hazard Ratio (HR)",
+            # Add a second axis and specify its features
+            sec.axis = sec_axis( trans=~.*2, name="-Log (p value)")
+          ) + scale_x_continuous( name = "Fraction in High Activity Group", limits = c(0, 1), expand = c(0, 0)) + geom_hline(aes(yintercept=1), color = "red") + geom_hline(aes(yintercept=0.65),  color = "green") + scale_fill_discrete(labels=c('HR', 'p value')) + theme_classic()+ theme(plot.title = element_text(hjust = 0.5),legend.position="bottom", text=element_text(size=30), axis.text=element_text(size=30))  + labs(colour="Legend",x="xxx",y="yyy")
+          
+          # dev.new(width = 500, height = 300, unit = "px")
+          p
+          
+          ggsave(paste0(Gene_set,"_LOCC.pdf"), plot=p,width = 7, height = 7, dpi = 300, units = "in")
+          # dev.off
+        }
+        
+        
+        #Mutation Analysis
+        {
+          #Select Data
+          # PtSurvivalCurve <- subset(PtClinical2, select = c(1,30:37,50,51))
+          PtSurvivalCurve <- subset(PtClinical2, select = c(1,30:37,38))
+          PtSurv <- subset(PtSurvivalCurve, select = c(1,3,2,10))
+          colnames(PtSurv) <- c("ID","time", "status", "mutation")
+          PtSurv <- mutate(PtSurv, Status = dplyr::recode(PtSurv$status, "1:DECEASED" = 1, "0:LIVING" = 0))
+          PtSurv <- na.omit(PtSurv)
+          PtSurv$mutation[PtSurv$mutation == Mutation1] <- "Mutant"
+          PtSurv$mutation[PtSurv$mutation == Mutation2] <- "Mutant"
+          PtSurv <- PtSurv[order(as.character(PtSurv$mutation),decreasing = FALSE), ]
+          PtSurv <- distinct(PtSurv, ID, .keep_all = T)
+          if ( length(PtSurv$mutation[PtSurv$mutation == "Mutant"]) > 5 ){
+            
+            #Graph Mutation Survival
+            length(PtSurv$mutation[PtSurv$mutation == "WT"])
+            Diffsurv <- survdiff(Surv(time, Status) ~ mutation, data = PtSurv) 
+            Fitsurv <- survfit(Surv(time, Status) ~ mutation, data = PtSurv)
+            
+            r <- survfit2(Surv(time, Status) ~  mutation, data = PtSurv) 
+            t <-  ggsurvplot(r, data = PtSurv, risk.table = TRUE,
+                             size=1.2,
+                             fontsize = 7.5,
+                             risk.table.y.text = FALSE,
+                             tables.y.text = FALSE,
+                             risk.table.height = 0.35,
+                             font.title = c(16, "bold", "black"),
+                             font.subtitle = c(16, "bold", "black"),
+                             font.caption = c(16, "bold", "black"),
+                             font.x = c(16, "bold", "black"),
+                             font.y = c(16, "bold", "black"),
+                             font.tickslab = c(16, "bold", "black")) 
+            t$plot <- t$plot + 
+              theme(legend.title = element_text(size = 18, color = "black", face = "bold"),
+                    legend.text = element_text(size = 18, color = "black", face = "bold"),
+                    axis.text.x = element_text(size = 20, color = "black", face = "bold"),
+                    axis.text.y = element_text(size = 20, color = "black", face = "bold"),
+                    axis.title.x = element_text(size = 20, color = "black", face = "bold"),
+                    axis.title.y = element_text(size = 20, color = "black", face = "bold"))
+            t$table <- t$table + 
+              theme(plot.title = element_text(size = 16, color = "black", face = "bold"), 
+                    axis.text.x = element_text(size = 20, color = "black", face = "bold"),
+                    axis.title.x = element_text(size = 20, color = "black", face = "bold"),
+              )
+            
+            capture.output(Diffsurv, file = paste0(Gene_set,"DiffsurvMut.csv"))
+            capture.output(Fitsurv, file = paste0(Gene_set,"FitsurvMut.csv"))
+            
+            pdf(paste0(Gene_set,"_mutsurv.pdf"))
+            print(t, newpage = FALSE)
+            dev.off()
+          }
+        }
+        
+        
+        #PtNrf2Score3 = merge(PtNrf2Score2, PtSample2, by = "SAMPLE_ID")
+        PtClinical4 <- merge(PtClinical, PtNrf2Score2,  by = "PATIENT_ID", .keep_all= TRUE)  
+        PtSurvivalCurve <- subset(PtClinical4, select = c(1,30:38))
+        #PtSurvivalCurve <- subset(PtClinical4, select = c(1,19:24))
+        #PtSurvivalCurve <- PtClinical4
+        PtSurv <- subset(PtSurvivalCurve, select = c(3,2,10))
+        #PtSurv <- subset(PtSurvivalCurve, select = c(3,2,7))
+        
+        
+        colnames(PtSurv) <- c("time", "status", "score")
+        PtSurv <- mutate(PtSurv, Status = dplyr::recode(PtSurv$status, "1:DECEASED" = 1, "0:LIVING" = 0))
+        PtSurv <- na.omit(PtSurv)
+        PtSurv$score <- as.numeric(PtSurv$score)
+        PtSurv <- PtSurv[order(as.numeric(PtSurv$score),decreasing = TRUE), ]
+        PtSurv[is.na(PtSurv)] <- 0
+        if (nrow(PtSurv) > 100 & (PtSurv[40,3] != PtSurv[100,3])){
+          #Cut at best
+          {
+            
+            #PtNrf2Score3 = merge(PtNrf2Score2, PtSample2, by = "SAMPLE_ID")
+            PtClinical4 <- merge(PtClinical, PtNrf2Score2,  by = "PATIENT_ID", .keep_all= TRUE)  
+            PtSurvivalCurve <- subset(PtClinical4, select = c(1,30:38))
+            #PtSurvivalCurve <- subset(PtClinical4, select = c(1,19:24))
+            #PtSurvivalCurve <- PtClinical4
+            PtSurv <- subset(PtSurvivalCurve, select = c(3,2,10))
+            #PtSurv <- subset(PtSurvivalCurve, select = c(3,2,7))
+            
+            
+            colnames(PtSurv) <- c("time", "status", "score")
+            PtSurv <- mutate(PtSurv, Status = dplyr::recode(PtSurv$status, "1:DECEASED" = 1, "0:LIVING" = 0))
+            PtSurv <- na.omit(PtSurv)
+            PtSurv$score <- as.numeric(PtSurv$score)
+            PtSurv$time <- as.numeric(PtSurv$time)
+            PtSurv[is.na(PtSurv)] <- 0
+            # PtSurv <- LiziSurv2
+            PtSurv <- PtSurv[order(as.numeric(PtSurv$score),decreasing = TRUE), ]
+            res.cut <- surv_cutpoint(PtSurv, time = "time", event = "Status",
+                                     variables = "score", minprop = 0.1)
+            summary(res.cut)
+            #PtSurv[1:cutter,3] <- "High_Nrf2_Score"
+            #PtSurv[cutter:(nrow(PtSurv)+1),3] <- "Low_Nrf2_Score"
+            #PtSurv[(1.5*nrow(PtSurv)-(nrow(PtSurv)-4)):(nrow(PtSurv)+1),3] <- "Low_Nrf2_Score"
+            #PtSurv$score[as.numeric(PtSurv$score) > .4] <- "Highest_Nrf2_Score"
+            PtSurv$score[as.numeric(PtSurv$score) > res.cut$score[4]] <- as.character("High_Score")
+            PtSurv$score[(PtSurv$score) <= res.cut$score[4]] <- as.character("Low_Score")
+            #PtSurv$score[as.numeric(PtSurv$score) > 0.68] <- "High_Nrf2"
+            #PtSurv$score[as.numeric(PtSurv$score) > 200] <- "Middle_GSMDB"
+            #PtSurv$score[as.numeric(PtSurv$score) <= 0.68] <- "Low_Nrf2"
+            # PtSurv <- filter(PtSurv, score == "High_Nrf2" | score == "Low_Nrf2")
+            #write.csv(PtSurv, file = paste0("PtSurv", cutter, ".csv"))
+          }
+          
+          
+          #LOCC score Analysis
+          summary(res.cut)
+          
+          length (AggreCut2$logp[AggreCut2$logp > as.numeric(2)])
+          max(AggreCut2$HR[AggreCut2$Fraction > 0.1 & AggreCut2$Fraction < 0.9])
+          min(AggreCut2$HR[AggreCut2$Fraction > 0.1 & AggreCut2$Fraction < 0.9])
+          
+          DF.qkscore <- data.frame(Mutation1, max(AggreCut2$logp[AggreCut2$Fraction > 0.1 & AggreCut2$Fraction < 0.9]), length (AggreCut2$logp[AggreCut2$logp > as.numeric(2)])/nrow(AggreCut2), max(AggreCut2$HR[AggreCut2$Fraction > 0.1 & AggreCut2$Fraction < 0.9]), min(AggreCut2$HR[AggreCut2$Fraction > 0.1 & AggreCut2$Fraction < 0.9]),res.cut$cutpoint$cutpoint, AggreCut2$HR[AggreCut2$logp == (max(AggreCut2$logp[AggreCut2$Fraction > 0.1 & AggreCut2$Fraction < 0.9]))])
+          colnames(DF.qkscore) <- c("Gene", "-log (p value)", "Percentage highly significantly", "Highest HR", "Lowest HR", "Cut", "significant HR")
+          write.csv(DF.qkscore, paste0(Gene_set, "_LOCC_Scorev3.csv"))
+          
+          LOCC <- as.numeric(DF.qkscore[1,2]) * as.numeric(DF.qkscore[1,3]) * as.numeric(DF.qkscore[1,7])
+          
+          
+          {
+            #Best Cutoff Kaplan Meier Curve and cox regression analysis
+            dev.new(width = 200, height = 200, unit = "px")
+            
+            
+            # r <- survfit2(Surv(time, Status) ~  score, data = PtSurv) %>% 
+            #   ggsurvfit(size = 2, risk.table = FALSE)  +
+            #   labs(
+            #     x = "Months",
+            #     y = "Overall survival probability", 
+            #   ) + add_risktable(size = 5)  + theme(legend.title = element_text(size = 20, color = "black", face = "bold"),
+            #                               legend.text = element_text(size = 20, color = "black", face = "bold"),
+            #                               axis.text.x = element_text(size = 20, color = "black", face = "bold"),
+            #                               axis.text.y = element_text(size = 20, color = "black", face = "bold"),
+            #                               axis.title.x = element_text(size = 20, color = "black", face = "bold"),
+            #                               axis.title.y = element_text(size = 20, color = "black", face = "bold"))
+            
+            
+            r <- survfit2(Surv(time, Status) ~  score, data = PtSurv) 
+            t <-  ggsurvplot(r, data = PtSurv, risk.table = TRUE,
+                             size=1.2,
+                             fontsize = 7.5,
+                             risk.table.y.text = FALSE,
+                             tables.y.text = FALSE,
+                             risk.table.height = 0.35,
+                             font.title = c(16, "bold", "black"),
+                             font.subtitle = c(16, "bold", "black"),
+                             font.caption = c(16, "bold", "black"),
+                             font.x = c(16, "bold", "black"),
+                             font.y = c(16, "bold", "black"),
+                             font.tickslab = c(16, "bold", "black")) 
+            t$plot <- t$plot + 
+              theme(legend.title = element_text(size = 14, color = "black", face = "bold"),
+                    legend.text = element_text(size = 14, color = "black", face = "bold"),
+                    axis.text.x = element_text(size = 20, color = "black", face = "bold"),
+                    axis.text.y = element_text(size = 20, color = "black", face = "bold"),
+                    axis.title.x = element_text(size = 20, color = "black", face = "bold"),
+                    axis.title.y = element_text(size = 20, color = "black", face = "bold"))
+            t$table <- t$table + 
+              theme(plot.title = element_text(size = 16, color = "black", face = "bold"), 
+                    axis.text.x = element_text(size = 20, color = "black", face = "bold"),
+                    axis.title.x = element_text(size = 20, color = "black", face = "bold"),
+              )
+            
+            pdf(paste0(Gene_set, "survplot.pdf"))
+            print(t, newpage = FALSE)
+            dev.off()
+            
+            
+            
+            fit <- coxph(Surv(time,Status) ~ score, data = PtSurv)
+            
+            SumFit <- summary(fit)
+            
+            survdiff(Surv(time, Status) ~ score, data = PtSurv) 
+            survfit(Surv(time, Status) ~ score, data = PtSurv)
+            
+            Diffsurv <- survdiff(Surv(time, Status) ~ score, data = PtSurv) 
+            
+            Fitsurv <- survfit(Surv(time, Status) ~ score, data = PtSurv)
+            
+            # Diffsurv2 <- lapply(1:5,function(i) data.frame(a=i,b=i^2))
+            
+            capture.output(SumFit, file = paste0(Gene_set,"SumFit.csv"))
+            capture.output(Diffsurv, file = paste0(Gene_set,"Diffsurv.csv"))
+            capture.output(Fitsurv, file = paste0(Gene_set,"Fitsurv.csv"))
+          }
+          
+          #Select best cutoff for activity plot
+          {
+            PtNrf2Score3 <- merge(PtNrf2Score2, PtSpecificMutation, all.x = TRUE)
+            bestcutoff <- res.cut$score
+            
+            write.csv(PtNrf2Score3, file = paste0(Gene_set,"vsMut.csv"))
+            
+            
+            bestcutoff <- res.cut$cutpoint$cutpoint
+          }
+          # bestcutoff <- 100.0
+          
+          #Sort by  Activity 
+          {
+            PtClinical4 <- merge(PtClinical, PtNrf2Score2,  by = "PATIENT_ID", .keep_all= TRUE)  
+            PtSurvivalCurve <- subset(PtClinical4, select = c(1,30:38))
+            #PtSurvivalCurve <- subset(PtClinical4, select = c(1,19:24))
+            #PtSurvivalCurve <- PtClinical4
+            PtSurv <- subset(PtSurvivalCurve, select = c(1,3,2,10))
+            #PtSurv <- subset(PtSurvivalCurve, select = c(3,2,7))
+            
+            
+            colnames(PtSurv) <- c("PATIENT_ID", "time", "status", "score")
+            PtSurv <- mutate(PtSurv, Status = dplyr::recode(PtSurv$status, "1:DECEASED" = 1, "0:LIVING" = 0))
+            PtSurv <- na.omit(PtSurv)
+            
+            df.activity <- data.frame(PtSurv)
+            df.activity <- df.activity[order(as.numeric(df.activity[,4]), decreasing = TRUE),]
+            df.activity <- df.activity %>% 
+              mutate(row_id=row_number())
+            df.activity <- merge(df.activity, PtSpecificMutation, by = "PATIENT_ID", keep.all = TRUE, all.x = TRUE)
+            df.activity[is.na(df.activity)] <- "WT"
+            df.activity <- subset(df.activity, select = c(4,6,7))
+            df.activity$Nrf2_Score <- as.numeric(df.activity$score)
+            df.activity <- df.activity[order(df.activity$score, decreasing = TRUE),]
+            #df.activity <- melt(df.activity, value = Nrf2_Score, id = c(2,3,4), na.rm =  TRUE)
+          }
+          
+          #Plot LOCC activity/score graph
+          {
+            q <- ggplot(df.activity, aes(x = row_id, y = Nrf2_Score,color = Hugo_Symbol)) + geom_point(size = 1.8)  + ggtitle(paste0(Gene_set," TCGA ", TCGA_Cancer_ID,  " Curve")) + scale_y_continuous(
+              #+ scale_color_manual(values=c("cornflower blue")) 
+              
+              # Features of the first axis
+              name = "N2AS", expand = c(0, 0)
+              # Add a second axis and specify its features
+              #sec.axis = sec_axis( trans=~.*2, name="-Log (p value)")
+            ) + scale_x_continuous( name = paste0("Ranking by ", Gene_set), expand = c(0, 1))  + geom_hline(aes(yintercept=bestcutoff),  color = "gray50") + scale_fill_discrete(labels=c('HR', 'p value')) + theme_classic()+ theme(legend.position="bottom", text=element_text(size=30), axis.text=element_text(size=30), plot.title = element_text(hjust = 0.5))  + labs(colour="Legend",x="xxx",y="yyy")
+            dev.new(width = 500, height = 300, unit = "px")
+            #plot(1:15)
+            q
+            ggsave(paste0(Gene_set," Activityv3.pdf"), plot=q)
+            
+          }
+        }
+       
+        graphics.off()
+      }
+    }
+    write.csv(DF.qkscore, file = "N2ASscorev3.csv")
+  }
+}
+
